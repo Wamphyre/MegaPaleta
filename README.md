@@ -2,7 +2,7 @@
 
 MegaPaleta is a specialized image conversion tool designed to adapt images to the Sega Mega Drive/Genesis color palette system. It supports both multi-palette tiles and single palette conversion while preserving transparency.
 
-![Main Interface Screenshot](screenshots/main.png)
+![Main Interface Screenshot](main.png)
 
 ## Features
 
@@ -86,10 +86,6 @@ python megapaleta.py
 - Preserves transparency
 - Uses color frequency weighting for better results
 - Optimal for images that don't need tile-based palette switching
-
-## Screenshots
-
-[Space reserved for additional screenshots showing the application in use]
 
 ## Technical Requirements
 
