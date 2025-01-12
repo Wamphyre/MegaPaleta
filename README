@@ -61,9 +61,6 @@ pip install -r requirements.txt
 
 # Run from source
 python megapaleta.py
-
-# Build executable
-pyinstaller build.spec
 ```
 
 ## Usage
@@ -101,21 +98,7 @@ pyinstaller build.spec
 - Storage: 300MB free space
 - Display: 1024x768 minimum resolution
 
-## Development
-
-### Project Structure
-```
-project/
-├── src/
-│   ├── megapaleta.py     # Main application code
-│   ├── build.py          # Build script
-│   └── icon.ico          # Application icon
-├── installer/
-│   └── setup.iss         # Inno Setup script
-└── dist/                 # Build output
-```
-
-### Building the Installer
+## Building the Installer
 1. Build the executable:
 ```bash
 pyinstaller build.spec
@@ -124,21 +107,3 @@ pyinstaller build.spec
 - Open setup.iss with Inno Setup Compiler
 - Click Compile
 - Find the installer in the Output directory
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
-
-## License
-
-[Insert chosen license information here]
-
-## Acknowledgments
-
-- Color quantization algorithm based on K-means clustering
-- YUV color space conversion for perceptual color matching
-- Mega Drive/Genesis technical specifications and limitations
