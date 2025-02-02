@@ -23,6 +23,11 @@ class ColorConverter:
         Calculate weighted YUV distance between two RGB colors
         Gives more importance to chrominance (UV) than luminance (Y)
         """
+        if isinstance(color1[0], np.uint8):
+            color1 = tuple(int(c) for c in color1)
+        if isinstance(color2[0], np.uint8):
+            color2 = tuple(int(c) for c in color2)
+            
         y1, u1, v1 = ColorConverter.rgb_to_yuv(*color1)
         y2, u2, v2 = ColorConverter.rgb_to_yuv(*color2)
         
@@ -35,9 +40,7 @@ class ColorConverter:
 
     @staticmethod
     def calculate_color_frequency(img_data):
-        """
-        Calculate frequency of each color in the image
-        """
+        """Calculate frequency of each color in the image"""
         color_counts = defaultdict(int)
         total_pixels = img_data.shape[0] * img_data.shape[1]
         
@@ -51,6 +54,7 @@ class ColorConverter:
 
     @staticmethod
     def rgb_to_megadrive(rgba):
+        """Convert RGBA color to Mega Drive format"""
         r, g, b, a = rgba
         if a < 128:  # Transparent pixel
             return None
@@ -58,6 +62,7 @@ class ColorConverter:
 
     @staticmethod
     def megadrive_to_rgb(md_color):
+        """Convert Mega Drive color to RGB format"""
         if md_color is None:
             return (0, 0, 0, 0)  # Completely transparent
         r, g, b = md_color
@@ -69,7 +74,47 @@ class PaletteManager:
         self.max_palettes = max_palettes
         self.palettes = [[] for _ in range(max_palettes)]
 
+    def create_indexed_image(self, image_data, palette):
+        """Create indexed image with improved color mapping"""
+        height, width = image_data.shape[:2]
+        indexed_data = np.zeros((height, width), dtype=np.uint8)
+        palette_lookup = {}
+        
+        # Create lookup table for colors
+        for idx, color in enumerate(palette):
+            if color is None:
+                palette_lookup[None] = 0
+            else:
+                rgb = ColorConverter.megadrive_to_rgb(color)[:3]
+                palette_lookup[rgb] = idx
+                
+        # Process each pixel
+        for y in range(height):
+            for x in range(width):
+                pixel = tuple(int(c) for c in image_data[y, x][:3])
+                alpha = image_data[y, x][3]
+                
+                if alpha < 128:
+                    indexed_data[y, x] = 0  # Transparent
+                else:
+                    # Find exact match or closest color
+                    if pixel not in palette_lookup:
+                        min_distance = float('inf')
+                        best_idx = 0
+                        for pal_color, idx in palette_lookup.items():
+                            if pal_color is not None:
+                                dist = ColorConverter.color_distance(pixel, pal_color)
+                                if dist < min_distance:
+                                    min_distance = dist
+                                    best_idx = idx
+                        indexed_data[y, x] = best_idx
+                    else:
+                        indexed_data[y, x] = palette_lookup[pixel]
+        
+        return indexed_data
+
     def cluster_colors_to_palettes(self, unique_colors):
+        """Cluster colors into multiple palettes"""
         colors_array = np.array([list(color) for color in unique_colors if color is not None])
         
         if len(colors_array) <= self.max_colors - 1:
@@ -77,7 +122,8 @@ class PaletteManager:
         
         kmeans = KMeans(
             n_clusters=min(self.max_palettes, len(colors_array)), 
-            random_state=42
+            random_state=42,
+            n_init=10
         )
         cluster_labels = kmeans.fit_predict(colors_array)
         
@@ -89,37 +135,11 @@ class PaletteManager:
         for i in range(self.max_palettes):
             if i in palette_colors:
                 colors = sorted(palette_colors[i], key=lambda c: sum(c))[:self.max_colors-1]
-                palettes.append([None] + colors)
+                palettes.append([None] + colors)  # Add transparent color at index 0
             else:
                 palettes.append([])
         
         return palettes
-
-    def create_indexed_image(self, image_data, palette):
-        height, width = image_data.shape[:2]
-        indexed_data = np.zeros((height, width), dtype=np.uint8)
-        palette_lookup = {}
-        
-        # Create palette lookup including transparency
-        for idx, color in enumerate(palette):
-            if color is None:
-                palette_lookup[None] = 0
-            else:
-                rgb = ColorConverter.megadrive_to_rgb(color)[:3]
-                palette_lookup[rgb] = idx
-        
-        # Convert image to indexed format
-        for y in range(height):
-            for x in range(width):
-                pixel = tuple(image_data[y, x][:3])
-                alpha = image_data[y, x][3]
-                
-                if alpha < 128:
-                    indexed_data[y, x] = 0  # Transparent color index
-                else:
-                    indexed_data[y, x] = palette_lookup.get(pixel, 0)
-        
-        return indexed_data
 
 class ImageProcessor:
     def __init__(self):
@@ -147,17 +167,19 @@ class ImageProcessor:
             return self._convert_to_megadrive(img_data)
 
     def _convert_to_megadrive(self, img_data):
-        """Convert image to Mega Drive format without color reduction"""
-        unique_colors = {ColorConverter.rgb_to_megadrive(tuple(pixel)) 
-                        for pixel in img_data.reshape(-1, 4)}
-        unique_colors.discard(None)  # Remove None (transparent) from the set
+        """Convert image to Mega Drive format"""
+        unique_colors = set()
+        for pixel in img_data.reshape(-1, 4):
+            if pixel[3] >= 128:  # Non-transparent pixel
+                md_color = ColorConverter.rgb_to_megadrive(tuple(pixel))
+                if md_color is not None:
+                    unique_colors.add(md_color)
         
         self.palette_manager.palettes = self.palette_manager.cluster_colors_to_palettes(unique_colors)
         
         # Create the converted image
         height, width = img_data.shape[:2]
         converted_data = np.zeros((height, width, 4), dtype=np.uint8)
-        alpha_channel = img_data[..., 3]
         
         # Create color mapping
         color_map = {}
@@ -169,14 +191,29 @@ class ImageProcessor:
         # Convert pixels
         for y in range(height):
             for x in range(width):
-                if alpha_channel[y, x] < 128:
+                pixel = tuple(img_data[y, x])
+                alpha = pixel[3]
+                if alpha < 128:
                     converted_data[y, x] = [0, 0, 0, 0]
                 else:
-                    pixel = tuple(img_data[y, x])
                     md_color = ColorConverter.rgb_to_megadrive(pixel)
-                    if md_color is not None:
+                    if md_color is not None and md_color in color_map:
                         rgba_color = color_map[md_color]
-                        converted_data[y, x] = [*rgba_color[:3], alpha_channel[y, x]]
+                        converted_data[y, x] = [*rgba_color[:3], alpha]
+                    else:
+                        # Find closest color if exact match not found
+                        min_distance = float('inf')
+                        closest_color = None
+                        pixel_rgb = pixel[:3]
+                        for pal_color in color_map:
+                            if pal_color is not None:
+                                rgb_color = ColorConverter.megadrive_to_rgb(pal_color)[:3]
+                                distance = ColorConverter.color_distance(pixel_rgb, rgb_color)
+                                if distance < min_distance:
+                                    min_distance = distance
+                                    closest_color = rgb_color
+                        if closest_color:
+                            converted_data[y, x] = [*closest_color, alpha]
 
         return Image.fromarray(converted_data, 'RGBA'), self.palette_manager.palettes
 
@@ -185,29 +222,41 @@ class ImageProcessor:
         color_frequencies = ColorConverter.calculate_color_frequency(img_data)
         unique_colors = list(color_frequencies.keys())
         
-        # If 15 or fewer colors, no need for clustering
         if len(unique_colors) <= 15:
             reduced_palette = [None] + [ColorConverter.rgb_to_megadrive((*c, 255)) for c in unique_colors]
         else:
             reduced_palette = self._cluster_colors(unique_colors, color_frequencies)
 
-        # Create the converted image
+        # Create converted image
         height, width = img_data.shape[:2]
         converted_data = np.zeros((height, width, 4), dtype=np.uint8)
-        alpha_channel = img_data[..., 3]
         
-        # Create color mapping using perceptual distance
-        color_mapping = self._create_color_mapping(img_data, reduced_palette)
+        # Create color mapping
+        color_mapping = {}
+        for color in reduced_palette[1:]:  # Skip transparent color
+            if color is not None:
+                rgb = ColorConverter.megadrive_to_rgb(color)[:3]
+                color_mapping[rgb] = rgb
 
         # Convert pixels
         for y in range(height):
             for x in range(width):
-                if alpha_channel[y, x] < 128:
+                pixel = img_data[y, x]
+                if pixel[3] < 128:
                     converted_data[y, x] = [0, 0, 0, 0]
                 else:
-                    original_color = tuple(img_data[y, x][:3])
-                    mapped_color = color_mapping[original_color]
-                    converted_data[y, x] = [*mapped_color, alpha_channel[y, x]]
+                    original_color = tuple(pixel[:3])
+                    # Find nearest color in palette
+                    min_distance = float('inf')
+                    nearest_color = None
+                    for palette_rgb in color_mapping.values():
+                        distance = ColorConverter.color_distance(original_color, palette_rgb)
+                        if distance < min_distance:
+                            min_distance = distance
+                            nearest_color = palette_rgb
+                    
+                    if nearest_color:
+                        converted_data[y, x] = [*nearest_color, pixel[3]]
 
         # Update palettes
         self.palette_manager.palettes = [reduced_palette] + [[] for _ in range(self.palette_manager.max_palettes - 1)]
@@ -215,17 +264,14 @@ class ImageProcessor:
         return Image.fromarray(converted_data, 'RGBA'), self.palette_manager.palettes
 
     def _cluster_colors(self, unique_colors, color_frequencies):
-        """Perform two-stage color clustering"""
+        """Perform color clustering with improved weights"""
         colors_array = np.array(unique_colors)
-        
-        # First clustering stage
-        initial_clusters = min(30, len(unique_colors))
-        kmeans1 = KMeans(n_clusters=initial_clusters, random_state=42)
-        
-        # Weight colors by frequency
         weights = np.array([color_frequencies[tuple(color)] for color in unique_colors])
         weights = weights.reshape(-1, 1) * 1000
         
+        # First clustering stage
+        initial_clusters = min(30, len(unique_colors))
+        kmeans1 = KMeans(n_clusters=initial_clusters, random_state=42, n_init=10)
         labels1 = kmeans1.fit_predict(colors_array)
         
         # Group colors by initial clusters
@@ -234,22 +280,24 @@ class ImageProcessor:
         for color, label, weight in zip(colors_array, labels1, weights):
             cluster_groups[label].append(color)
             cluster_weights[label].append(weight[0])
-            
+        
         # Select representative colors
         final_colors = []
         for label in range(initial_clusters):
             if label in cluster_groups:
                 cluster_colors = np.array(cluster_groups[label])
                 cluster_w = np.array(cluster_weights[label])
-                center = np.average(cluster_colors, weights=cluster_w, axis=0)
-                distances = [ColorConverter.color_distance(center, color) for color in cluster_colors]
-                best_idx = np.argmin(distances)
-                final_colors.append(tuple(cluster_colors[best_idx]))
+                weighted_avg = np.average(cluster_colors, weights=cluster_w, axis=0)
+                closest_idx = np.argmin([
+                    ColorConverter.color_distance(weighted_avg, color)
+                    for color in cluster_colors
+                ])
+                final_colors.append(tuple(cluster_colors[closest_idx]))
         
-        # Second stage if needed
+        # Second stage clustering if needed
         if len(final_colors) > 15:
             colors_array = np.array(final_colors)
-            kmeans2 = KMeans(n_clusters=15, random_state=42)
+            kmeans2 = KMeans(n_clusters=15, random_state=42, n_init=10)
             centers = kmeans2.fit(colors_array).cluster_centers_
             
             reduced_palette = [None]  # Start with transparency
@@ -261,31 +309,6 @@ class ImageProcessor:
             reduced_palette = [None] + [ColorConverter.rgb_to_megadrive((*c, 255)) for c in final_colors]
         
         return reduced_palette
-
-    def _create_color_mapping(self, img_data, palette):
-        """Create mapping from original colors to palette colors"""
-        color_mapping = {}
-        height, width = img_data.shape[:2]
-        
-        for y in range(height):
-            for x in range(width):
-                original_color = tuple(img_data[y, x][:3])
-                if original_color not in color_mapping:
-                    min_distance = float('inf')
-                    nearest_color = None
-                    
-                    for palette_color in palette[1:]:  # Skip transparent color
-                        if palette_color is None:
-                            continue
-                        palette_rgb = ColorConverter.megadrive_to_rgb(palette_color)[:3]
-                        distance = ColorConverter.color_distance(original_color, palette_rgb)
-                        if distance < min_distance:
-                            min_distance = distance
-                            nearest_color = palette_rgb
-                    
-                    color_mapping[original_color] = nearest_color
-        
-        return color_mapping
 
 class MegaDrivePaletteConverter:
     def __init__(self, root):
@@ -365,7 +388,7 @@ class MegaDrivePaletteConverter:
         self.log_text.config(state='disabled')
 
     def add_to_log(self, message):
-        """Añade un mensaje al log con timestamp"""
+        """Add a message to the log with timestamp"""
         timestamp = time.strftime('%H:%M:%S')
         log_message = f"[{timestamp}] {message}\n"
         
@@ -375,6 +398,7 @@ class MegaDrivePaletteConverter:
         self.log_text.config(state='disabled')
 
     def display_image(self, image, label):
+        """Display an image in the specified label"""
         if image:
             # Get screen dimensions
             screen_width = self.root.winfo_screenwidth()
@@ -390,18 +414,18 @@ class MegaDrivePaletteConverter:
             height_ratio = max_height / height
             scale_factor = min(width_ratio, height_ratio, 2.0)  # Max zoom 2x
             
-            # Resize image
+            # Resize image for display
             new_width = int(width * scale_factor)
             new_height = int(height * scale_factor)
             display_image = image.resize((new_width, new_height), Image.Resampling.NEAREST)
             
-            # Display
+            # Convert to PhotoImage and display
             photo = ImageTk.PhotoImage(display_image)
             label.config(image=photo)
-            label.image = photo
+            label.image = photo  # Keep reference!
 
     def process_image(self, reduce_colors=False):
-        """Procesa la imagen actual"""
+        """Process the current image"""
         if self.current_image is None:
             messagebox.showwarning("Error", "Please load an image first")
             return
@@ -423,13 +447,13 @@ class MegaDrivePaletteConverter:
             if reduce_colors:
                 palette = palettes[0]
                 self.add_to_log(f"Reduced to {len(palette)} colors")
-                self.add_to_log(f"Processing completed in {process_time:.2f} seconds")
             else:
                 total_colors = sum(len(p) for p in palettes if p)
                 palettes_used = sum(1 for p in palettes if p)
                 self.add_to_log(f"Total colors: {total_colors}")
                 self.add_to_log(f"Palettes used: {palettes_used}")
-                self.add_to_log(f"Processing completed in {process_time:.2f} seconds")
+            
+            self.add_to_log(f"Processing completed in {process_time:.2f} seconds")
                 
         except Exception as e:
             error_msg = f"Error processing image: {str(e)}"
@@ -437,7 +461,7 @@ class MegaDrivePaletteConverter:
             messagebox.showerror("Error", error_msg)
 
     def export_palettes(self):
-        """Exporta la paleta actual como imagen indexada"""
+        """Export the current palettes as an indexed image"""
         if not any(self.processor.palette_manager.palettes):
             messagebox.showwarning("Error", "No palettes to export")
             return
@@ -474,7 +498,7 @@ class MegaDrivePaletteConverter:
                     y = current_row * CELL_SIZE
                     
                     if color is None:
-                        # Transparent color
+                        # Handle transparent color
                         color_map[None] = 0
                         # Fill transparent area in indexed data
                         indexed_data[y:y + CELL_SIZE, x:x + CELL_SIZE] = 0
@@ -487,7 +511,7 @@ class MegaDrivePaletteConverter:
                                 else:
                                     draw.point((x + i, y + j), fill=(192, 192, 192, 255))
                     else:
-                        # Assign new index for color
+                        # Handle regular color
                         if color not in color_map:
                             color_index += 1
                             color_map[color] = color_index
@@ -554,7 +578,7 @@ class MegaDrivePaletteConverter:
             messagebox.showerror("Error", error_msg)
 
     def save_image(self):
-        """Guarda la imagen convertida"""
+        """Save the converted image"""
         if self.simplified_image is None:
             messagebox.showwarning("Error", "No converted image to save")
             return
@@ -571,31 +595,8 @@ class MegaDrivePaletteConverter:
             start_time = time.time()
             self.add_to_log(f"Starting image save: {os.path.basename(file_path)}")
             
-            # Convert to indexed format
-            img_data = np.array(self.simplified_image)
-            indexed_data = self.processor.palette_manager.create_indexed_image(
-                img_data, 
-                self.processor.palette_manager.palettes[0]
-            )
-            
-            # Create palette data
-            palette_data = []
-            for color in self.processor.palette_manager.palettes[0]:
-                if color is None:
-                    palette_data.extend([0, 0, 0])  # Transparent
-                else:
-                    rgb = ColorConverter.megadrive_to_rgb(color)
-                    palette_data.extend(rgb[:3])
-            
-            # Fill remaining palette entries
-            while len(palette_data) < 768:  # 256 colors * 3 channels
-                palette_data.extend([0, 0, 0])
-            
-            # Create and save indexed image
-            indexed_image = Image.fromarray(indexed_data, mode='P')
-            indexed_image.putpalette(palette_data)
-            indexed_image.info['transparency'] = 0
-            indexed_image.save(file_path, optimize=True)
+            # Save original RGBA image with transparency
+            self.simplified_image.save(file_path, optimize=True)
             
             process_time = time.time() - start_time
             self.add_to_log(f"Image saved successfully: {os.path.basename(file_path)}")
@@ -610,7 +611,7 @@ class MegaDrivePaletteConverter:
             messagebox.showerror("Error", error_msg)
 
     def load_image(self):
-        """Carga una imagen"""
+        """Load an image file"""
         file_path = filedialog.askopenfilename(
             filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.gif")]
         )
